@@ -15,7 +15,7 @@ st.set_page_config(
 # ----------------------------
 @st.cache_data
 def load_data():
-    file = r"knitting_machine_6months_data_final_v2.xlsx"
+    file = r"knitting_machine_data.xlsx"
 
     machine = pd.read_excel(file, sheet_name="Machine_Data")
     operator = pd.read_excel(file, sheet_name="operator efficiency")
@@ -50,12 +50,6 @@ month_sel = st.sidebar.multiselect(
     sorted(machine_df["Month_Name"].unique())
 )
 
-shift_sel = st.sidebar.multiselect(
-    "Shift",
-    sorted(machine_df["Shift"].unique()),
-    default=sorted(machine_df["Shift"].unique())
-)
-
 date_range = st.sidebar.date_input("Date Range", [])
 
 # ----------------------------
@@ -73,8 +67,7 @@ def apply_filters(df):
         if month_sel:
             df = df[df["Month_Name"].isin(month_sel)]
 
-    if "Shift" in df.columns and shift_sel:
-        df = df[df["Shift"].isin(shift_sel)]
+    
 
     return df
 
@@ -173,46 +166,91 @@ with tab_machine:
     # MACHINE SUMMARY TABLE
     st.subheader("🔎 Machine-wise Performance Summary")
 
-    machine_summary = (
-    machine_f
-    .groupby("Machine_No")
-    .agg(
-        Avg_Rpm=("RPM", "mean"),
-        Total_Expected_Rolls=("Expected_Rolls", "sum"),
-        Total_Actual_Rolls=("Actual_Rolls", "sum")
-    )
-    .reset_index()
-)
-
-# remove decimals from Avg RPM
-    machine_summary["Avg_Rpm"] = machine_summary["Avg_Rpm"].round(0).astype(int)
-
-    machine_summary["Efficiency %"] = (
-        machine_summary["Total_Actual_Rolls"] /
-        machine_summary["Total_Expected_Rolls"] * 100
-    ).round(2)
-
-
-    machine_summary["Efficiency %"] = machine_summary["Efficiency %"].round(2)
-
-    machine_input = st.text_input(
-        "Enter Machine Number (leave empty to view all)",
-        placeholder="e.g. 1"
+    # 🔍 Machine Search
+    search_machine = st.text_input(
+        "Search Machine Number",
+        placeholder="Type machine number (e.g., 12)"
     )
 
-    if machine_input.strip().isdigit():
-        machine_summary_view = machine_summary[
-            machine_summary["Machine_No"] == int(machine_input)
+
+    df = machine_f.copy()
+
+    if search_machine.strip().isdigit():
+        df =df[
+            df["Machine_No"] == int(search_machine)
         ]
-    else:
-        machine_summary_view = machine_summary.copy()
 
-    st.data_editor(
-        machine_summary_view,
-        use_container_width=True,
-        hide_index=True,
-        disabled=True
+
+    # efficiency
+    df["Efficiency %"] = df["Actual_Rolls"] / df["Expected_Rolls"] * 100
+
+    # machine specs
+    specs = (
+        df.groupby("Machine_No")
+        .agg(
+            RPM=("RPM", "mean"),
+            Counter_12hrs=("Counter_12hrs", "mean"),
+            Counter_Set_Per_Roll=("Counter_Set_Per_Roll", "mean"),
+        )
+        .reset_index()
     )
+
+    # DAY SHIFT
+    day = (
+        df[df["Shift"] == "Day"]
+        .groupby("Machine_No")
+        .agg(
+            Day_Expected_rolls=("Expected_Rolls", "sum"),
+            Day_Actual_rolls=("Actual_Rolls", "sum"),
+        )
+        .reset_index()
+    )
+    day["Day Eff %"] = day["Day_Actual_rolls"] / day["Day_Expected_rolls"] * 100
+
+    # NIGHT SHIFT
+    night = (
+        df[df["Shift"] == "Night"]
+        .groupby("Machine_No")
+        .agg(
+            Night_Expected_rolls=("Expected_Rolls", "sum"),
+            Night_Actual_rolls=("Actual_Rolls", "sum"),
+        )
+        .reset_index()
+    )
+    night["Night Eff %"] = night["Night_Actual_rolls"] / night["Night_Expected_rolls"] * 100
+
+    # TOTAL
+    # Calculate Overall Efficiency (average of day and night)
+    summary_temp = specs.merge(day, on="Machine_No", how="left") \
+                .merge(night, on="Machine_No", how="left")
+    
+    summary_temp["Overall Eff %"] = (
+        (summary_temp["Day Eff %"] + summary_temp["Night Eff %"]) / 2
+    )
+    
+    summary = summary_temp
+
+    # format numbers (clean look)
+    summary["RPM"] = summary["RPM"].round().astype(int)
+    summary["Counter_12hrs"] = summary["Counter_12hrs"].round().astype(int)
+    summary["Counter_Set_Per_Roll"] = summary["Counter_Set_Per_Roll"].round().astype(int)
+
+    for col in summary.columns:
+        if "Eff" in col:
+            summary[col] = summary[col].round(1)
+
+    summary = summary.rename(columns={
+        "Machine_No": "Machine",
+        "Counter_12hrs": "Counter (12 hrs)",
+        "Counter_Set_Per_Roll": "Counter per Roll"
+    })
+
+    st.dataframe(
+        summary.sort_values("Machine"),
+        use_container_width=True,
+        hide_index=True
+    )
+
 
 # ==================================================
 # 📊 PRODUCTION DASHBOARD
@@ -238,42 +276,59 @@ with tab_prod:
     fig = px.line(prod_trend, x="Date", y="Actual_Rolls", markers=True)
     st.plotly_chart(fig, use_container_width=True)
 
+    # ============================
+    # 📋 Production Summary Table
+    # ============================
     st.subheader("📋 Production Table")
 
-    view_type = st.selectbox(
-    "View By",
-    ["Machine-wise", "Date-wise"]
-)
+    col1, col2 = st.columns(2)
 
-    if view_type == "Machine-wise":
-
-        table = (
-            machine_f
-            .groupby("Machine_No")["Actual_Rolls"]
-            .sum()
-            .reset_index()
-            .sort_values("Machine_No")
+    with col1:
+        machine_search = st.text_input(
+            "Search by Machine Number",
+            placeholder="e.g. 1 or 25"
         )
 
-    else:   # Date-wise → show Date + Machine
+    with col2:
+        date_search = st.date_input("Search by Date", value=None)
 
-        table = (
-            machine_f
-            .groupby(["Date", "Machine_No"])["Actual_Rolls"]
-            .sum()
-            .reset_index()
-            .sort_values(["Date", "Machine_No"])
-        )
+    prod_table = machine_f.copy()
 
-        # cleaner date format
-        table["Date"] = table["Date"].dt.strftime("%Y-%m-%d")
+    # Machine filter
+    if machine_search:
+        prod_table = prod_table[
+            prod_table["Machine_No"] == int(machine_search)
+        ]
+
+    # Date filter
+    if date_search:
+        prod_table = prod_table[
+            prod_table["Date"] == pd.to_datetime(date_search)
+        ]
+
+    # ✅ Remove time from date
+    prod_table["Date"] = prod_table["Date"].dt.date
+
+    # Create summary
+    prod_table = (
+        prod_table
+        .groupby(["Date", "Machine_No"])["Actual_Rolls"]
+        .sum()
+        .reset_index()
+        .rename(columns={
+            "Machine_No": "Machine Number",
+            "Actual_Rolls": "Total_Rolls"
+        })
+        .sort_values(["Date", "Machine Number"])
+    )
 
     st.data_editor(
-        table,
+        prod_table,
         use_container_width=True,
         hide_index=True,
         disabled=True
     )
+
 
     
 # ==================================================
@@ -344,11 +399,55 @@ with tab_operator:
     st.plotly_chart(fig, use_container_width=True)
 
 
-    st.subheader("👷 Operator Performance Summary")
+    st.subheader("🧑‍🏭 Operator Performance Summary")
 
-    st.data_editor(
-        operator_summary,
+    # ---------- Operator Filter ----------
+    operators = ["All"] + sorted(operator_f["Operator_Name"].dropna().unique().tolist())
+
+    selected_operator = st.selectbox(
+        "Select Operator (optional)",
+        operators
+    )
+
+    data = operator_f.copy()
+
+    if selected_operator != "All":
+        data = data[data["Operator_Name"] == selected_operator]
+
+    # ---------- Summary Calculation ----------
+    summary = (
+        data.groupby("Operator_Name")
+        .agg(
+            Production=("Actual_Rolls", "sum"),
+            Machines_Handled=("Machine_No", lambda x: ", ".join(map(str, sorted(x.unique())))),
+            Expected=("Expected_Rolls", "sum"),
+            Actual=("Actual_Rolls", "sum"),
+        )
+        .reset_index()
+    )
+
+    # Efficiency %
+    summary["Efficiency %"] = (
+        summary["Actual"] / summary["Expected"] * 100
+    ).round(2)
+
+    # Remove helper columns
+    summary = summary.drop(columns=["Expected", "Actual"])
+
+    # Rename columns for display
+    summary.columns = [
+        "Machine Operator",
+        "Production",
+        "Machines Handled",
+        "Efficiency %"
+    ]
+
+    # Sort by efficiency
+    summary = summary.sort_values("Efficiency %", ascending=False)
+
+    # ---------- Display ----------
+    st.dataframe(
+        summary,
         use_container_width=True,
-        hide_index=True,
-        disabled=True
+        hide_index=True
     )
