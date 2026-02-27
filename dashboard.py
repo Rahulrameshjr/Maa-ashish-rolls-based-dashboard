@@ -50,7 +50,13 @@ month_sel = st.sidebar.multiselect(
     sorted(machine_df["Month_Name"].unique())
 )
 
-date_range = st.sidebar.date_input("Date Range", [])
+date_range = st.sidebar.date_input(
+    "Date Range",
+    value=(),
+    min_value=machine_df["Date"].min(),
+    max_value=machine_df["Date"].max(),
+    format="YYYY/MM/DD"
+)
 
 # ----------------------------
 # FILTER FUNCTION
